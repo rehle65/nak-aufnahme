@@ -48,7 +48,7 @@ GOTTESDIENST_SECS=$(date -j -f "%Y-%m-%d %H:%M:%S" "${TODAY} ${GOTTESDIENST}:00"
 # OBS-Aufnahme: 10 Minuten vor Gottesdienstbeginn
 OBS_START_SECS=$((GOTTESDIENST_SECS - 10 * 60))
 
-# naciptv startet ~50 Sek vor OBS-Start (8 Sek Start + 30 Sek OBS-Init + 3 Sek + Puffer)
+# naciptv startet ~50 Sek vor OBS-Start (Puffer für Ladezeit)
 NACIPTV_START_SECS=$((OBS_START_SECS - 50))
 
 # Aufnahmeende
@@ -75,8 +75,27 @@ fi
 # naciptv starten
 echo "[$(date)] Öffne naciptv PWA..." >> "$LOG"
 open "/Users/roland.ehle/Applications/Edge Apps.localized/naciptv.app"
-sleep 8
+
+# Warten bis naciptv-Fenster tatsächlich bereit ist (max. 40 Sekunden)
+echo "[$(date)] Warte auf naciptv-Fenster..." >> "$LOG"
+NACIPTV_READY=0
+for i in $(seq 1 20); do
+    sleep 2
+    WIN=$(osascript -e 'tell application "System Events" to tell process "naciptv" to count windows' 2>/dev/null)
+    if [ "$WIN" -ge 1 ] 2>/dev/null; then
+        NACIPTV_READY=1
+        echo "[$(date)] naciptv-Fenster bereit nach $((i * 2)) Sekunden" >> "$LOG"
+        break
+    fi
+done
+
+if [ $NACIPTV_READY -eq 0 ]; then
+    echo "[$(date)] WARNUNG: naciptv-Fenster nicht gefunden nach 40 Sekunden — versuche trotzdem fortzufahren" >> "$LOG"
+fi
+
+# naciptv positionieren und Vollbild
 osascript -e 'tell application "System Events" to tell process "naciptv" to set position of window 1 to {3200, -1080}'
+sleep 1
 osascript -e 'tell application "System Events" to tell process "naciptv" to set value of attribute "AXFullScreen" of window 1 to true'
 echo "[$(date)] naciptv auf Smart M70F im Vollbild" >> "$LOG"
 
