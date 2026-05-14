@@ -4,10 +4,6 @@
 #   GOTTESDIENST_BEGINN: Format HH:MM (z.B. 20:00)
 #   DAUER_MINUTEN:       Aufnahmedauer ab OBS-Start in Minuten (z.B. 90)
 #   test:                Optionaler Parameter — kompletter Ablauf, Aufnahme nur 3 Minuten
-#
-# Beispiele:
-#   ./nak-aufnahme.sh 20:00 90        -> normaler Ablauf, OBS startet 19:50, läuft 90 Min
-#   ./nak-aufnahme.sh 20:00 90 test   -> Testlauf, OBS startet 19:50, Aufnahme nur 3 Min
 
 LOG=~/nak-aufnahme.log
 
@@ -15,6 +11,17 @@ LOG=~/nak-aufnahme.log
 if [ -z "$1" ] || [ -z "$2" ]; then
     echo "[$(date)] FEHLER: Aufruf: nak-aufnahme.sh HH:MM DAUER_MINUTEN [test]" | tee -a "$LOG"
     exit 1
+fi
+
+# --- Laufende Instanzen beenden ---
+MYPID=$$
+RUNNING=$(pgrep -f "nak-aufnahme.sh" | grep -v "^${MYPID}$")
+if [ -n "$RUNNING" ]; then
+    echo "[$(date)] Laufende Instanz(en) gefunden (PID: $RUNNING) — werden beendet." | tee -a "$LOG"
+    kill $RUNNING 2>/dev/null
+    sleep 2
+    kill -9 $RUNNING 2>/dev/null
+    echo "[$(date)] Alte Instanz(en) beendet." >> "$LOG"
 fi
 
 GOTTESDIENST="$1"
@@ -102,7 +109,27 @@ echo "[$(date)] naciptv auf Smart M70F im Vollbild" >> "$LOG"
 # OBS starten
 echo "[$(date)] Starte OBS..." >> "$LOG"
 open -a OBS
-sleep 30
+
+# *** NEU: Warten bis OBS-Fenster wirklich bereit ist (max. 60 Sekunden) ***
+OBS_READY=0
+for i in $(seq 1 30); do
+    sleep 2
+    WIN=$(osascript -e 'tell application "System Events" to tell process "OBS" to count windows' 2>/dev/null)
+    if [ "$WIN" -ge 1 ] 2>/dev/null; then
+        OBS_READY=1
+        echo "[$(date)] OBS bereit nach $((i * 2)) Sekunden" >> "$LOG"
+        break
+    fi
+done
+
+if [ $OBS_READY -eq 0 ]; then
+    echo "[$(date)] FEHLER: OBS nicht gestartet nach 60 Sekunden — Abbruch!" >> "$LOG"
+    exit 1
+fi
+
+# Zusätzliche 5 Sekunden Puffer damit OBS vollständig geladen ist
+sleep 5
+
 osascript -e 'tell application "System Events" to tell process "OBS" to set position of window 1 to {5120, 323}'
 echo "[$(date)] OBS auf MacBook Display positioniert" >> "$LOG"
 
@@ -110,7 +137,46 @@ echo "[$(date)] OBS auf MacBook Display positioniert" >> "$LOG"
 osascript -e 'tell application "OBS" to activate'
 sleep 3
 osascript -e 'tell application "System Events" to key code 101'
-echo "[$(date)] Aufnahme gestartet (F9) — läuft ${AUFNAHME_SECS} Sekunden bis $OBS_STOP_TIME Uhr" >> "$LOG"
+echo "[$(date)] F9 gesendet — warte auf Aufnahmestart..." >> "$LOG"
+
+# *** NEU: Prüfen ob Aufnahmedatei tatsächlich angelegt wurde (max. 30 Sekunden) ***
+RECORDING_CONFIRMED=0
+for i in $(seq 1 15); do
+    sleep 2
+    NEWEST=$(ls -t ~/Movies/*.mp4 ~/Movies/*.mkv 2>/dev/null | head -1)
+    if [ -n "$NEWEST" ]; then
+        FILE_AGE=$(( $(date +%s) - $(date -r "$NEWEST" +%s) ))
+        if [ $FILE_AGE -lt 60 ]; then
+            RECORDING_CONFIRMED=1
+            echo "[$(date)] Aufnahme bestätigt: $(basename "$NEWEST")" >> "$LOG"
+            break
+        fi
+    fi
+done
+
+# *** NEU: Wenn keine Datei — nochmal F9 versuchen ***
+if [ $RECORDING_CONFIRMED -eq 0 ]; then
+    echo "[$(date)] WARNUNG: Keine Aufnahmedatei gefunden — sende F9 erneut..." >> "$LOG"
+    osascript -e 'tell application "OBS" to activate'
+    sleep 2
+    osascript -e 'tell application "System Events" to key code 101'
+    sleep 5
+    # Nochmal prüfen
+    NEWEST=$(ls -t ~/Movies/*.mp4 ~/Movies/*.mkv 2>/dev/null | head -1)
+    if [ -n "$NEWEST" ]; then
+        FILE_AGE=$(( $(date +%s) - $(date -r "$NEWEST" +%s) ))
+        if [ $FILE_AGE -lt 60 ]; then
+            echo "[$(date)] Aufnahme nach 2. Versuch bestätigt: $(basename "$NEWEST")" >> "$LOG"
+            RECORDING_CONFIRMED=1
+        fi
+    fi
+    if [ $RECORDING_CONFIRMED -eq 0 ]; then
+        echo "[$(date)] FEHLER: Aufnahme konnte nicht gestartet werden — OBS läuft, aber keine Datei!" >> "$LOG"
+        # Trotzdem weiterlaufen und am Ende stoppen versuchen
+    fi
+fi
+
+echo "[$(date)] Aufnahme läuft ${AUFNAHME_SECS} Sekunden bis $OBS_STOP_TIME Uhr" >> "$LOG"
 
 # Warten
 sleep $AUFNAHME_SECS
